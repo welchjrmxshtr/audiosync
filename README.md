@@ -106,6 +106,31 @@ audiosync [--gui] [--list] [--host] [--join HOST] [--stop] [--status]
 `--smoke` is a hidden headless startup check for manual verification; it is
 not a user-facing feature.
 
+## Automatic updates
+
+Each device can track `main` with the updater and user timer in the
+repository:
+
+```sh
+install -Dm644 systemd/audiosync-update.service ~/.config/systemd/user/audiosync-update.service
+install -Dm644 systemd/audiosync-update.timer ~/.config/systemd/user/audiosync-update.timer
+systemctl --user daemon-reload
+systemctl --user enable --now audiosync-update.timer
+systemctl --user list-timers audiosync-update.timer
+```
+
+`scripts/update.sh` fast-forwards a clean `main` checkout, runs the unit
+tests, and reports the resulting commit. A dirty tree, a detached HEAD, or a
+branch that is ahead of or diverged from `origin/main` is reported and left
+alone; it never resets, rebases, or force-pulls. Snapcast units are restarted
+only when their own unit template changed, and `install.sh` or PipeWire are
+never run. The timer runs every 15 minutes, at boot, and catches up a missed
+run after downtime (`Persistent=true`). Inspect it with:
+
+```sh
+journalctl --user -u audiosync-update.service -n 40 --no-pager
+```
+
 ## SMB media mount
 
 The library feature works with any mounted folder, but a CIFS/SMB share needs

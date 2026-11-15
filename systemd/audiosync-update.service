@@ -1,0 +1,13 @@
+[Unit]
+Description=Audiosync git update check
+Documentation=https://github.com/welchjrmxshtr/audiosync
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/audiosync
+ExecStart=%h/audiosync/scripts/update.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=10min

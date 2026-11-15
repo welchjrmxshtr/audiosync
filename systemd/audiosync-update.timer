@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically update Audiosync from git
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=60
+AccuracySec=30s
+Unit=audiosync-update.service
+
+[Install]
+WantedBy=timers.target

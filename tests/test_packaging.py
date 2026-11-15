@@ -36,7 +36,7 @@ class PackagingTests(unittest.TestCase):
 
 class ShellScriptTests(unittest.TestCase):
     def test_shell_scripts_parse(self) -> None:
-        for relative in ("install.sh", "scripts/setup-smb-mount.sh"):
+        for relative in ("install.sh", "scripts/setup-smb-mount.sh", "scripts/update.sh"):
             result = subprocess.run(
                 ["bash", "-n", str(ROOT / relative)],
                 capture_output=True,

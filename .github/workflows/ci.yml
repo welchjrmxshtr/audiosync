@@ -32,4 +32,4 @@ jobs:
       - name: Console entry point
         run: audiosync --version
       - name: Shell syntax
-        run: bash -n install.sh scripts/setup-smb-mount.sh
+        run: bash -n install.sh scripts/setup-smb-mount.sh scripts/update.sh
