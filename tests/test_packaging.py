@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import site
 import subprocess
 import tempfile
 import tomllib
@@ -283,6 +284,13 @@ class InstallerAutoUpdateTests(unittest.TestCase):
                 "AUDIOSYNC_CONFIG_DIR": str(self.home / ".config/audiosync"),
                 "AUDIOSYNC_STATE_DIR": str(self.home / ".local/share/audiosync"),
                 "SYSTEMCTL_LOG": str(self.log),
+                # A bogus session bus makes an accidental real systemctl call fail
+                # instead of stopping the developer's services.
+                "DBUS_SESSION_BUS_ADDRESS": f"unix:path={self.root / 'no-session-bus'}",
+                # Changing HOME hides packages installed in the real user site.
+                "PYTHONPATH": os.pathsep.join(
+                    part for part in (env.get("PYTHONPATH", ""), site.getusersitepackages()) if part
+                ),
                 "PATH": f"{self.bin}{os.pathsep}{env.get('PATH', '')}",
             }
         )
@@ -295,6 +303,7 @@ class InstallerAutoUpdateTests(unittest.TestCase):
             timeout=60,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("daemon-reload", self._calls())
         return result
 
     def _unit(self, name: str) -> Path:
