@@ -222,5 +222,109 @@ class ShellScriptTests(unittest.TestCase):
             self.assertFalse(mountpoint.exists())
 
 
+_PACTL_SINKS = """
+Sink #64
+\tState: RUNNING
+\tName: alsa_output.pci-0000_0b_00.6.analog-stereo
+\tDescription: Test Analog Stereo
+\tProperties:
+\t\talsa.card = "1"
+\t\talsa.device = "0"
+\t\talsa.card_name = "Test Analog"
+"""
+
+
+class InstallerAutoUpdateTests(unittest.TestCase):
+    """Exercise the installer against a throwaway HOME and stubbed system tools."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.log = self.root / "systemctl.log"
+        self._stub("systemctl", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYSTEMCTL_LOG"\n')
+        self._stub("snapserver", "#!/bin/sh\nexit 0\n")
+        self._stub(
+            "snapclient",
+            '#!/bin/sh\ncase "$1" in --help) echo "snapclient 0.34 (pipewire)";; esac\nexit 0\n',
+        )
+        self._stub("parec", "#!/bin/sh\nexit 0\n")
+        self._stub("sleep", "#!/bin/sh\nexit 0\n")
+        self._stub(
+            "pactl",
+            "#!/bin/sh\n"
+            'if [ "$1" = list ] && [ "$2" = short ]; then\n'
+            "  printf '0\\taudiosync_sink\\tAudiosync\\n'\n"
+            'elif [ "$1" = list ] && [ "$2" = sinks ]; then\n'
+            "  cat <<'SINKS'\n" + _PACTL_SINKS + "SINKS\n"
+            "fi\n"
+            "exit 0\n",
+        )
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def _stub(self, name: str, body: str) -> None:
+        path = self.bin / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+
+    def _run_install(self, *args: str) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(self.home),
+                "XDG_CONFIG_HOME": str(self.home / ".config"),
+                "XDG_DATA_HOME": str(self.home / ".local/share"),
+                "XDG_STATE_HOME": str(self.home / ".local/state"),
+                "AUDIOSYNC_CONFIG_DIR": str(self.home / ".config/audiosync"),
+                "AUDIOSYNC_STATE_DIR": str(self.home / ".local/share/audiosync"),
+                "SYSTEMCTL_LOG": str(self.log),
+                "PATH": f"{self.bin}{os.pathsep}{env.get('PATH', '')}",
+            }
+        )
+        result = subprocess.run(
+            ["bash", str(ROOT / "install.sh"), *args],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def _unit(self, name: str) -> Path:
+        return self.home / ".config/systemd/user" / name
+
+    def _calls(self) -> str:
+        return self.log.read_text(encoding="utf-8") if self.log.exists() else ""
+
+    def test_with_auto_update_installs_and_enables_timer(self) -> None:
+        self._run_install("--with-auto-update")
+        for unit in ("audiosync-update.service", "audiosync-update.timer"):
+            self.assertEqual(
+                self._unit(unit).read_text(encoding="utf-8"),
+                (ROOT / "systemd" / unit).read_text(encoding="utf-8"),
+            )
+        self.assertIn("enable --now audiosync-update.timer", self._calls())
+
+    def test_without_flag_leaves_auto_updates_off(self) -> None:
+        self._run_install()
+        self.assertFalse(self._unit("audiosync-update.service").exists())
+        self.assertFalse(self._unit("audiosync-update.timer").exists())
+        self.assertNotIn("enable --now audiosync-update.timer", self._calls())
+
+    def test_uninstall_removes_auto_update_units(self) -> None:
+        self._run_install("--with-auto-update")
+        self._run_install("--uninstall", "--no-smb")
+        self.assertFalse(self._unit("audiosync-update.service").exists())
+        self.assertFalse(self._unit("audiosync-update.timer").exists())
+        self.assertIn("disable --now audiosync-update.timer", self._calls())
+
+
 if __name__ == "__main__":
     unittest.main()
