@@ -1,0 +1,16 @@
+[Unit]
+Description=Audiosync Snapcast client (plays this device's speakers)
+After=pipewire-pulse.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The wrapper sources client.env and expands the arguments itself: systemd
+# passes ${AUDIOSYNC_ARGS} through as a single literal word otherwise.
+EnvironmentFile=%h/.config/audiosync/client.env
+ExecStart=%h/.local/bin/audiosync-snapclient
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

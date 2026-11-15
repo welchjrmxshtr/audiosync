@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Audiosync
+Comment=Sample-locked audio between this machine and the others on your LAN
+Exec=@BINDIR@/audiosync-gui
+Icon=audio-speakers
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=sync;audio;multiroom;snapcast;
+StartupNotify=true

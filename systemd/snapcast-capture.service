@@ -1,0 +1,18 @@
+[Unit]
+Description=Audiosync PipeWire capture bridge (host role)
+PartOf=snapserver.service
+After=snapserver.service pipewire-pulse.service
+BindsTo=snapserver.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/audiosync/capture.env
+# The recorder emits raw PCM on stdout; that must go into the FIFO, not the
+# journal.  Opening the FIFO for write blocks until snapserver has a reader,
+# which is exactly the ordering we want.
+ExecStart=/bin/sh -c 'exec @RECORDER@ ${AUDIOSYNC_SRC_ARG} > %t/audiosync.fifo'
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target

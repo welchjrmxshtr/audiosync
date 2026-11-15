@@ -1,0 +1,16 @@
+[Unit]
+Description=Audiosync Snapcast server (host role)
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire-pulse.service
+
+[Service]
+Type=simple
+# The FIFO deliberately survives restarts: recreating it would leave the
+# capture bridge holding a dead inode, so a restart would silently go quiet.
+ExecStartPre=-/usr/bin/mkfifo -m 600 %t/audiosync.fifo
+ExecStart=@BINDIR@/snapserver -c %h/.config/audiosync/snapserver.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
