@@ -207,9 +207,12 @@ very poor links or when video sync matters more than latency. **Manual** pins
 a value from 40 to 5000 ms and is intended for controlled experiments; it is
 not adaptive.
 
-Lower buffers reduce the audio delay but are more sensitive to Wi-Fi jitter.
-The UI shows the current buffer and underrun count; treat them as diagnostics,
-not as an acoustic latency measurement.
+Lower buffers reduce the audio delay but are more sensitive to Wi-Fi jitter. The UI shows the current buffer and underrun count; treat them as diagnostics, not as an acoustic latency measurement.
+
+`audiosync --bench HOST` measures the TCP round trip to a host and prints the
+codec that link implies plus that codec's buffer floor, so a transport change
+can be compared instead of assumed. Add `--transport btpan` to see the capped
+view.
 
 ### Acoustic sync
 

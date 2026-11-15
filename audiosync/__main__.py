@@ -11,7 +11,7 @@ import argparse
 import sys
 import time
 
-from . import __version__, config, transport
+from . import __version__, codec, config, transport
 from .backend import Backend, BackendError, reachable, server_ready, unit_active
 from .discovery import Discovery, resolve_host
 
@@ -33,6 +33,11 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
         "--transport",
         choices=transport.POLICIES,
         help="auto|lan|btpan; btpan fails closed when no PAN link is up",
+    )
+    parser.add_argument(
+        "--bench",
+        metavar="HOST",
+        help="measure TCP RTT to a host and report the codec/buffer it implies",
     )
     parser.add_argument("--resolve", metavar="NAME", help=argparse.SUPPRESS)
     parser.add_argument("--smoke", action="store_true", help=argparse.SUPPRESS)
@@ -112,6 +117,17 @@ def cmd_join(host: str) -> int:
     return 0
 
 
+def cmd_bench(host: str, policy: str = "auto") -> int:
+    """Measure a link instead of asserting that one transport is faster."""
+    address = resolve_host(host) or host
+    probe = codec.probe_link(address, config.SNAPCAST_STREAM_PORT, samples=5)
+    limit = "flac" if policy == transport.BTPAN else None
+    chosen, reason = codec.choose_codec(probe, limit=limit)
+    print(f"{address}: {probe.describe()}")
+    print(f"codec={chosen} floor={codec.buffer_floor_for(chosen)}ms ({reason})")
+    return 0 if probe.ok else 1
+
+
 def cmd_stop() -> int:
     cfg = config.Config.load()
     Backend(cfg).stop()
@@ -153,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
         from .app import run_gui
 
         return run_gui(smoke=True)
+    if args.bench:
+        return cmd_bench(args.bench, args.transport or "auto")
     if args.list:
         return cmd_list()
     if args.host:
