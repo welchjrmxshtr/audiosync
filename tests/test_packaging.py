@@ -69,6 +69,23 @@ class ShellScriptTests(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
 
+    def test_installer_offers_opt_in_auto_updates(self) -> None:
+        text = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("WITH_AUTO_UPDATE=0", text)
+        for phrase in (
+            "--with-auto-update",
+            "audiosync-update.service",
+            "audiosync-update.timer",
+            "enable --now audiosync-update.timer",
+        ):
+            self.assertIn(phrase, text)
+
+    def test_installer_uninstall_removes_auto_update_units(self) -> None:
+        text = (ROOT / "install.sh").read_text(encoding="utf-8")
+        uninstall = text.split('if [ "$ACTION" = "uninstall" ]', 1)[1]
+        for phrase in ("audiosync-update.timer", "audiosync-update.service"):
+            self.assertIn(phrase, uninstall)
+
     def test_setup_script_is_executable_and_has_safe_invariants(self) -> None:
         script = ROOT / "scripts/setup-smb-mount.sh"
         self.assertTrue(os.access(script, os.X_OK))

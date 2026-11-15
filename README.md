@@ -111,7 +111,14 @@ not a user-facing feature.
 ## Automatic updates
 
 Each device can track `main` with the updater and user timer in the
-repository:
+repository. Enable it as part of a fresh install:
+
+```sh
+./install.sh --with-auto-update
+```
+
+Without the flag the installer leaves auto-updates off. `--uninstall`
+disables and removes both units. To install the timer manually instead:
 
 ```sh
 install -Dm644 systemd/audiosync-update.service ~/.config/systemd/user/audiosync-update.service
@@ -127,7 +134,14 @@ branch that is ahead of or diverged from `origin/main` is reported and left
 alone; it never resets, rebases, or force-pulls. Snapcast units are restarted
 only when their own unit template changed, and `install.sh` or PipeWire are
 never run. The timer runs every 15 minutes, at boot, and catches up a missed
-run after downtime (`Persistent=true`). Inspect it with:
+run after downtime (`Persistent=true`). To run updates while logged out,
+enable lingering once:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+Inspect runs with:
 
 ```sh
 journalctl --user -u audiosync-update.service -n 40 --no-pager

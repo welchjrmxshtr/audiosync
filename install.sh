@@ -19,6 +19,7 @@ REMOVE_SMB=0
 NO_SMB=0
 ACTION=install
 PURGE=0
+WITH_AUTO_UPDATE=0
 
 die() { printf 'audiosync: %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
@@ -28,6 +29,10 @@ usage() {
 Usage: install.sh [--cleanup-legacy] [--uninstall|--purge] [options]
 
 Installs the Audiosync user services and launchers under $HOME.
+
+Install options:
+  --with-auto-update  install and enable the 15-minute git update timer
+  --cleanup-legacy    remove legacy RTP config and exit
 
 Uninstall options:
   --uninstall       remove the user services, launchers, and desktop entry
@@ -69,6 +74,10 @@ while [ "$#" -gt 0 ]; do
       ACTION=cleanup-legacy
       shift
       ;;
+    --with-auto-update)
+      WITH_AUTO_UPDATE=1
+      shift
+      ;;
     --uninstall)
       ACTION=uninstall
       shift
@@ -104,6 +113,7 @@ done
 [ "$DRY_RUN" -eq 1 ] && [ "$ACTION" != "uninstall" ] && die "--dry-run is only supported with --uninstall"
 [ "$REMOVE_SMB" -eq 1 ] && [ "$ACTION" != "uninstall" ] && die "--remove-smb is only supported with --uninstall"
 [ "$NO_SMB" -eq 1 ] && [ "$ACTION" != "uninstall" ] && die "--no-smb is only supported with --uninstall"
+[ "$WITH_AUTO_UPDATE" -eq 1 ] && [ "$ACTION" != "install" ] && die "--with-auto-update is only supported on install"
 
 if [ "$ACTION" = "cleanup-legacy" ]; then
   cleanup_legacy_rtp
@@ -163,7 +173,7 @@ smb_cleanup() {
 
 if [ "$ACTION" = "uninstall" ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
-    say "dry-run: would stop and remove user units and launchers"
+    say "dry-run: would stop and remove user units, launchers, and the update timer"
     cleanup_legacy_rtp
     smb_cleanup
     if [ "$PURGE" -eq 1 ]; then
@@ -349,6 +359,12 @@ install_unit "$PROJECT/systemd/snapserver.service"        "$UNIT_DIR/snapserver.
 install_unit "$PROJECT/systemd/snapcast-capture.service" "$UNIT_DIR/snapcast-capture.service" "$RECORDER_BIN $RECORDER_ARGS"
 install_unit "$PROJECT/systemd/snapclient.service"       "$UNIT_DIR/snapclient.service"       "$RECORDER_BIN"
 
+if [ "$WITH_AUTO_UPDATE" -eq 1 ]; then
+  say "installing the auto-update timer"
+  install -m 0644 "$PROJECT/systemd/audiosync-update.service" "$UNIT_DIR/audiosync-update.service"
+  install -m 0644 "$PROJECT/systemd/audiosync-update.timer" "$UNIT_DIR/audiosync-update.timer"
+fi
+
 say "writing launchers"
 mkdir -p "$BIN_DIR" "$APP_DIR"
 cat > "$BIN_DIR/audiosync-gui" <<EOF
@@ -401,6 +417,13 @@ PY
 
 say "reloading systemd"
 systemctl --user daemon-reload
+
+if [ "$WITH_AUTO_UPDATE" -eq 1 ]; then
+  say "enabling the auto-update timer (every 15 minutes)"
+  systemctl --user enable --now audiosync-update.timer
+  say "auto-update logs: journalctl --user -u audiosync-update.service"
+  say "optional: loginctl enable-linger $USER (updates while logged out)"
+fi
 
 if pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx audiosync_sink; then
   say "audiosync_sink is available"
