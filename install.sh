@@ -174,7 +174,9 @@ if [ "$ACTION" = "uninstall" ]; then
   fi
   say "stopping and removing user units"
   systemctl --user disable --now snapserver.service snapcast-capture.service snapclient.service 2>/dev/null || true
+  systemctl --user disable --now audiosync-update.timer 2>/dev/null || true
   rm -f "$UNIT_DIR/snapserver.service" "$UNIT_DIR/snapcast-capture.service" "$UNIT_DIR/snapclient.service"
+  rm -f "$UNIT_DIR/audiosync-update.service" "$UNIT_DIR/audiosync-update.timer"
   rm -f "$PIPEWIRE_DIR/10-audiosync-sink.conf"
   rm -f "$APP_DIR/audiosync.desktop" "$BIN_DIR/audiosync-gui" "$BIN_DIR/audiosync-snapclient"
   cleanup_legacy_rtp
