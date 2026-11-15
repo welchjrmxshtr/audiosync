@@ -22,7 +22,7 @@ from typing import Any
 from . import safety
 
 APP_NAME = "audiosync"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 #: Snapcast defaults (see plan's wire-protocol table).
 SNAPCAST_STREAM_PORT = 1704
