@@ -42,12 +42,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import calibration, config, lipsync, preload, safety
+from . import calibration, config, lipsync, preload, safety, transport
 from . import codec as codec_mod
 from . import library as library_mod
 from .acoustic_sync import AcousticLatencyApplier
 from .backend import Backend, BackendError, server_ready
-from .discovery import Discovery
+from .discovery import Discovery, resolve_host
 from .health import ClientTracker, RemoteUnderrunWatcher, UnderrunWatcher
 from .latency import ControllerConfig, LatencyController, PreRollGate
 
@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
         #: Headless runs must not block on dialogs; _alert/_confirm notice this.
         self.silent = silent
         self.backend = Backend(cfg)
-        self.discovery = Discovery()
+        self.discovery = Discovery(cfg.display_name())
         self.controller = LatencyController(
             buffer_ms=cfg.effective_buffer_ms(),
             learned_floor_ms=cfg.learned_floor(cfg.preferred_host),
@@ -241,6 +241,10 @@ class MainWindow(QMainWindow):
         self.gate = PreRollGate()
         self.state = IDLE
         self.host_ip = "127.0.0.1"
+        #: Stable identity of the host we joined, so a DHCP change is followed.
+        self._host_peer = ""
+        #: Transport kind of the current link, shown in the status line.
+        self._link_kind = ""
         self._client_widgets: dict[str, dict] = {}
         self._output_note = ""
         self._gate_ids: dict[str, str] = {}
@@ -334,6 +338,18 @@ class MainWindow(QMainWindow):
         add_button.setAccessibleName("Add device by IP")
         add_button.clicked.connect(self._on_add_manual)
         host_layout.addWidget(add_button)
+        self.transport_combo = QComboBox()
+        self.transport_combo.setAccessibleName("Network path")
+        self.transport_combo.setToolTip(
+            "Auto prefers wired, then Wi-Fi, and never picks Bluetooth on its own.\n"
+            "Bluetooth uses a point-to-point PAN link and fails closed when it is down."
+        )
+        for value, label in (("auto", "Auto"), ("lan", "LAN"), ("btpan", "Bluetooth")):
+            self.transport_combo.addItem(label, value)
+        transport_index = self.transport_combo.findData(self.cfg.transport)
+        self.transport_combo.setCurrentIndex(transport_index if transport_index >= 0 else 0)
+        self.transport_combo.currentIndexChanged.connect(self._on_transport_changed)
+        host_layout.addWidget(self.transport_combo)
         host_layout.addSpacing(4)
         self.start_button = QPushButton("&Start")
         self.start_button.setToolTip("Host here, or join the selected device")
@@ -641,7 +657,42 @@ class MainWindow(QMainWindow):
     def _on_host_changed(self) -> None:
         data = self.host_combo.currentData()
         self.cfg.preferred_host = data
+        if data:
+            peer = self.discovery.find(data)
+            if peer is not None:
+                self.cfg.preferred_peer = peer.ident or peer.name
         self.cfg.save()
+
+    def _restore_transport_combo(self) -> None:
+        self.transport_combo.blockSignals(True)
+        index = self.transport_combo.findData(self.cfg.transport)
+        self.transport_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.transport_combo.blockSignals(False)
+
+    def _on_transport_changed(self) -> None:
+        selected = self.transport_combo.currentData()
+        try:
+            selected = transport.validate_transport(selected)
+        except ValueError as exc:
+            self._restore_transport_combo()
+            self._set_notice(str(exc))
+            return
+        if self.state != IDLE:
+            self._restore_transport_combo()
+            self._set_notice("Stop hosting or joining before changing the network path.")
+            return
+        if selected == transport.BTPAN:
+            status = transport.pan_status()
+            if not status["available"]:
+                self._restore_transport_combo()
+                self._set_notice(
+                    "No Bluetooth PAN interface. Run scripts/setup-bt-pan.sh on both devices first.",
+                    seconds=8,
+                )
+                return
+        self.cfg.transport = selected
+        self.cfg.save()
+        self._refresh_hosts()
 
     def _on_playback_changed(self) -> None:
         selected = next((value for value, radio in self.play_radios.items() if radio.isChecked()), None)
@@ -787,7 +838,7 @@ class MainWindow(QMainWindow):
             if not name or name in seen:
                 continue
             seen.add(name)
-            if name == config.device_name() or preload.is_local_host(host):
+            if name == self.cfg.display_name() or preload.is_local_host(host):
                 targets.append(preload.Target(name, None))
             else:
                 targets.append(preload.Target(name, host or name))
@@ -1007,10 +1058,14 @@ class MainWindow(QMainWindow):
             return "pcm"
         worst = None
         for peer in peers:
-            probe = codec_mod.probe_link(peer.address, config.SNAPCAST_STREAM_PORT, samples=2, timeout=0.4)
+            endpoint = peer.best_endpoint(self.cfg.transport) or transport.Endpoint(peer.address)
+            probe = codec_mod.probe_link(endpoint.address, config.SNAPCAST_STREAM_PORT, samples=2, timeout=0.4)
             if worst is None or (probe.rtt_ms or 0) > (worst.rtt_ms or 0):
                 worst = probe
-        chosen, reason = codec_mod.choose_codec(worst, preferred="pcm")
+        # A PAN cannot carry raw 48 kHz stereo; the cap follows the explicit
+        # Bluetooth choice so a downgrade is explained, never silent.
+        limit = "flac" if self.cfg.transport == transport.BTPAN else None
+        chosen, reason = codec_mod.choose_codec(worst, preferred="pcm", limit=limit)
         self.cfg.codec = chosen
         self.cfg.save()
         if chosen != "pcm":
@@ -1029,7 +1084,7 @@ class MainWindow(QMainWindow):
                 "virtual sink would be captured and streamed back to the group.",
             )
             return
-        others = [p for p in self.discovery.hosts() if p.name != config.device_name()]
+        others = [p for p in self.discovery.hosts() if p.name != self.cfg.display_name()]
         if others and not force:
             names = ", ".join(p.name for p in others)
             if not self._confirm(
@@ -1049,7 +1104,7 @@ class MainWindow(QMainWindow):
             return
         # The server may already be running from a previous session; clear this
         # device's records before it loads its persisted history again.
-        self.backend.forget_pairings("127.0.0.1", config.device_name(), local=True)
+        self.backend.forget_pairings("127.0.0.1", self.cfg.display_name(), local=True)
         try:
             self.backend.host(buffer_ms=buffer_ms, codec=codec, playback=self.cfg.playback)
         except BackendError as exc:
@@ -1061,15 +1116,15 @@ class MainWindow(QMainWindow):
             rows_now = self.backend.clients("127.0.0.1")
         except BackendError:
             rows_now = []
-        if any(row["connected"] and row["name"] == config.device_name() for row in rows_now):
-            self.backend.forget_pairings("127.0.0.1", config.device_name(), include_connected=False)
+        if any(row["connected"] and row["name"] == self.cfg.display_name() for row in rows_now):
+            self.backend.forget_pairings("127.0.0.1", self.cfg.display_name(), include_connected=False)
         self.state = HOSTING
         self._unit_states = ""
         self.host_ip = "127.0.0.1"
         self.controller = LatencyController(
             ControllerConfig(floor_ms=self._codec_floor(codec)),
             buffer_ms=buffer_ms,
-            learned_floor_ms=self.cfg.learned_floor(config.device_name()),
+            learned_floor_ms=self.cfg.learned_floor(self.cfg.display_name()),
         )
         now = self._now()
         self.controller.set_preset(self.cfg.preset, now, buffer_ms)
@@ -1088,7 +1143,7 @@ class MainWindow(QMainWindow):
         self._acoustic_next = now + max(10, int(self.cfg.acoustic_interval_s)) if self.cfg.acoustic_monitor else 0.0
         self._ignore_drops_until = 0.0
         self._last_diagnosis = ""
-        self.discovery.update(role="host", serves=config.device_name(), buf_ms=buffer_ms, preset=self.cfg.preset)
+        self.discovery.update(role="host", serves=self.cfg.display_name(), buf_ms=buffer_ms, preset=self.cfg.preset)
 
     def _join(self, address: str) -> None:
         if self._preload_thread is not None or self._playing_job is not None or self._preload_stop_thread is not None:
@@ -1098,6 +1153,24 @@ class MainWindow(QMainWindow):
                 "mix with the Snapcast stream.",
             )
             return
+        peer = self.discovery.find(address)
+        chosen = self._chosen_endpoint(peer, address)
+        if chosen is None:
+            pan = transport.pan_status()
+            self._alert(
+                "Bluetooth link is not available",
+                "The Bluetooth network path is selected, but no PAN interface has an "
+                "address.\n\nOn the device sharing its connection:\n"
+                "  scripts/setup-bt-pan.sh --mode nap\n"
+                "On this device:\n"
+                "  scripts/setup-bt-pan.sh --mode panu --mac <host MAC>\n\n"
+                "Pair the two devices once in the desktop's Bluetooth settings.\n"
+                f"Interfaces seen: {', '.join(pan['interfaces']) or 'none'}",
+            )
+            return
+        address = chosen.address
+        self._link_kind = chosen.kind
+        self._host_peer = (peer.ident or peer.name) if peer is not None else ""
         diagnosis = self.backend.diagnose_peer(address)
         if not diagnosis["ok"]:
             # Probe the actual ports rather than blaming "the network".
@@ -1106,11 +1179,11 @@ class MainWindow(QMainWindow):
             return
         self._refresh_output(restart=False)
         self.backend.stop_client()
-        cleared = self.backend.forget_pairings(address, config.device_name())
+        cleared = self.backend.forget_pairings(address, self.cfg.display_name())
         if cleared:
             self._output_note += f" \u00b7 cleared {cleared} stale pairing(s)"
         try:
-            self.backend.join(address)
+            self.backend.join(address, host_name=peer.name if peer is not None else "")
         except BackendError as exc:
             self._alert("Could not join", f"{exc}\n\n{diagnosis['summary']}")
             return
@@ -1119,6 +1192,27 @@ class MainWindow(QMainWindow):
         self.host_ip = address
         peer = self.discovery.find(address)
         self.discovery.update(role="client", serves=peer.name if peer else address, preset=self.cfg.preset)
+
+    def _chosen_endpoint(self, peer, address: str) -> transport.Endpoint | None:
+        """The path to use for ``peer``, or ``None`` when the policy fails closed."""
+        endpoints = list(getattr(peer, "endpoints", []) or [])
+        if not endpoints:
+            # A manual IP carries no transport metadata.  Bluetooth still
+            # fails closed: without a PAN there is nothing to select.
+            if self.cfg.transport == transport.BTPAN and not transport.pan_status()["available"]:
+                return None
+            return transport.Endpoint(address, "", transport.OTHER)
+        local = [endpoint.address for endpoint in transport.local_endpoints()]
+        return transport.choose_endpoint(endpoints, self.cfg.transport, local)
+
+    def _resolve_host_address(self) -> str:
+        """Follow the host to its current address after a network change."""
+        peer = self.discovery.find(self._host_peer or self.host_ip)
+        if peer is None:
+            resolved = resolve_host(self._host_peer) if self._host_peer else ""
+            return resolved or self.host_ip
+        chosen = self._chosen_endpoint(peer, self.host_ip)
+        return chosen.address if chosen is not None else self.host_ip
 
     def _reset_session(self) -> None:
         """Return the app to idle without touching the systemd units.
@@ -1130,6 +1224,8 @@ class MainWindow(QMainWindow):
         self._restore_gate_volumes()
         self.state = IDLE
         self.host_ip = "127.0.0.1"
+        self._host_peer = ""
+        self._link_kind = ""
         self._preroll_active = False
         self._armed.clear()
         self._gate_ids.clear()
@@ -1161,6 +1257,9 @@ class MainWindow(QMainWindow):
 
     def _refresh_ui(self, now: float) -> None:
         self._ticks += 1
+        if self._ticks % 10 == 1:
+            # Moving between Wi-Fi and Ethernet must re-announce this device.
+            self.discovery.refresh_addresses()
         self._sync_library_state()
         if self._ticks % 5 == 1 or not self._unit_states:
             self._unit_states = self.backend.status_line("127.0.0.1")
@@ -1181,18 +1280,20 @@ class MainWindow(QMainWindow):
                 self.state = STREAMING
 
         if self.state == LOST and now - self._last_retry > 5.0:
-            # Keep trying the host we lost; Start stays available as an
-            # explicit escape hatch to host here instead.
+            # Retry the peer by identity: after a DHCP change or a move from
+            # Wi-Fi to Ethernet the old address will never answer again.
             self._last_retry = now
             self._refresh_output(restart=False)
-            self.backend.forget_pairings(self.host_ip, config.device_name())
+            address = self._resolve_host_address()
+            self.backend.forget_pairings(address, self.cfg.display_name())
             try:
-                self.backend.join(self.host_ip)
-                if server_ready(self.host_ip, timeout=0.5):
+                self.backend.join(address, host_name=self._host_peer)
+                if server_ready(address, timeout=0.5):
+                    self.host_ip = address
                     self.state = JOINING
                     self.tracker.reset()
             except BackendError:
-                self._last_diagnosis = self.backend.diagnose_peer(self.host_ip)["summary"]
+                self._last_diagnosis = self.backend.diagnose_peer(address)["summary"]
 
         if self.state == HOSTING:
             self._apply_saved_latencies(rows)
@@ -1243,7 +1344,7 @@ class MainWindow(QMainWindow):
             # No connected client means nothing can underrun (and a stopped
             # unit's old journal lines must never be counted).
             for _ in range(min(self.underruns.poll(), 3)):
-                changed = self.controller.on_client_underrun(config.device_name(), now)
+                changed = self.controller.on_client_underrun(self.cfg.display_name(), now)
                 self._persist_learned_floor()
                 if changed is not None:
                     self._apply_buffer(changed)
@@ -1253,7 +1354,7 @@ class MainWindow(QMainWindow):
                 host = str(row.get("host") or "")
                 if not name or not host or host == "?":
                     continue
-                if name == config.device_name() or preload.is_local_host(host):
+                if name == self.cfg.display_name() or preload.is_local_host(host):
                     continue
                 watcher = self._remote_watchers.get(name)
                 if watcher is None or watcher.host != host:
@@ -1302,7 +1403,7 @@ class MainWindow(QMainWindow):
         learned = self.controller.learned_floor
         if learned is None:
             return
-        key = config.device_name()
+        key = self.cfg.display_name()
         if self.cfg.learned_floor_ms.get(key) != learned:
             self.cfg.learned_floor_ms[key] = learned
             self.cfg.save()
@@ -1412,11 +1513,23 @@ class MainWindow(QMainWindow):
         self.host_combo.clear()
         self.host_combo.addItem("This device", None)
         for peer in peers:
-            label = f"{peer.name} ({peer.address})"
+            endpoint = peer.best_endpoint(self.cfg.transport) or transport.Endpoint(peer.address)
+            label = f"{peer.name} ({endpoint.address})"
             if peer.role == "host":
                 label += " \u2014 hosting"
-            self.host_combo.addItem(label, peer.address)
+            self.host_combo.addItem(label, endpoint.address)
+            self.host_combo.setItemData(
+                self.host_combo.count() - 1,
+                peer.ident or peer.name,
+                int(Qt.ItemDataRole.UserRole) + 1,
+            )
         index = self.host_combo.findData(current) if current else 0
+        if index < 0 and self.cfg.preferred_peer:
+            # The address changed but the device is the same: keep the choice.
+            for position in range(self.host_combo.count()):
+                if self.host_combo.itemData(position, int(Qt.ItemDataRole.UserRole) + 1) == self.cfg.preferred_peer:
+                    index = position
+                    break
         self.host_combo.setCurrentIndex(index if index >= 0 else 0)
         self.host_combo.blockSignals(False)
 
@@ -1467,7 +1580,7 @@ class MainWindow(QMainWindow):
         buffer_ms = self.controller.buffer_ms
         peers = len(self.discovery.peers())
         peer_text = f"{peers} peer" + ("" if peers == 1 else "s")
-        self.header.setText(f"<b>{config.device_name()}</b> \u00b7 {peer_text}")
+        self.header.setText(f"<b>{self.cfg.display_name()}</b> \u00b7 {peer_text}")
         speakers = f"{len(rows)} speaker" + ("" if len(rows) == 1 else "s")
         if self.state == HOSTING:
             status = self.controller.status()
@@ -1496,7 +1609,8 @@ class MainWindow(QMainWindow):
             self.latency_label.setToolTip("The host chooses the buffer for this device.")
             verb = "Streaming from" if self.state == STREAMING else "Joining"
             output_note = f" \u00b7 {self._output_note}" if self._output_note else ""
-            self.status.setText(f"{verb} {self.host_ip} \u00b7 {speakers}{output_note}")
+            link = f" over {self._link_kind}" if self._link_kind else ""
+            self.status.setText(f"{verb} {self.host_ip}{link} \u00b7 {speakers}{output_note}")
         elif self.state == LOST:
             self.latency_label.setText("Buffer: \u2014")
             self.latency_label.setToolTip("Waiting for the host to return.")
@@ -1521,6 +1635,7 @@ class MainWindow(QMainWindow):
         playback_locked = self.state != IDLE
         for radio in self.play_radios.values():
             radio.setEnabled(not playback_locked)
+        self.transport_combo.setEnabled(not playback_locked)
         can_measure = self.state == HOSTING and not self._acoustic_route_reason()
         self.calibrate_button.setEnabled(can_measure or self._calibration_thread is not None)
         self.monitor_check.setEnabled(can_measure or self.cfg.acoustic_monitor)
@@ -1558,8 +1673,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _preload_targets(self) -> list[preload.Target]:
         """This device first, then discovered peers and manually saved hosts."""
-        seen = {config.device_name()}
-        targets = [preload.Target(config.device_name(), None)]
+        seen = {self.cfg.display_name()}
+        targets = [preload.Target(self.cfg.display_name(), None)]
         for target in preload.peer_targets(self.discovery.peers()):
             if target.name in seen:
                 continue

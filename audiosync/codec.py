@@ -61,19 +61,34 @@ def probe_link(host: str, port: int = 1704, samples: int = 3, timeout: float = 0
     )
 
 
-def choose_codec(probe: LinkProbe | None, preferred: str = "pcm") -> tuple[str, str]:
+def choose_codec(
+    probe: LinkProbe | None,
+    preferred: str = "pcm",
+    limit: str | None = None,
+) -> tuple[str, str]:
     """Pick the cheapest-to-decode codec the link can plausibly sustain.
 
-    Returns ``(codec, reason)``; the reason is surfaced in the UI so a
-    downgrade is never silent.
+    ``limit`` caps the result for a narrow transport: a Bluetooth PAN cannot
+    carry raw 48 kHz stereo (1.536 Mbit/s) alongside its own overhead, so the
+    ceiling there is FLAC and the cap is reported, never silent.
+
+    Returns ``(codec, reason)``; the reason is surfaced in the UI.
     """
     if probe is None or not probe.ok:
-        return preferred, "no probe"
-    if probe.loss >= 0.34 or (probe.rtt_ms or 0) >= 60:
-        return "opus", f"congested link ({probe.describe()})"
-    if probe.loss > 0 or (probe.rtt_ms or 0) >= 20:
-        return "flac", f"jittery link ({probe.describe()})"
-    return preferred, f"clean link ({probe.describe()})"
+        codec, reason = preferred, "no probe"
+    elif probe.loss >= 0.34 or (probe.rtt_ms or 0) >= 60:
+        codec, reason = "opus", f"congested link ({probe.describe()})"
+    elif probe.loss > 0 or (probe.rtt_ms or 0) >= 20:
+        codec, reason = "flac", f"jittery link ({probe.describe()})"
+    else:
+        codec, reason = preferred, f"clean link ({probe.describe()})"
+    if limit in CODEC_ORDER and codec in CODEC_ORDER:
+        # CODEC_ORDER runs widest to narrowest: a wider codec than the limit
+        # (lower index) is the only thing the cap needs to change.
+        if CODEC_ORDER.index(codec) < CODEC_ORDER.index(limit):
+            codec = limit
+            reason = f"{reason}; capped to {limit} for this transport"
+    return codec, reason
 
 
 def buffer_floor_for(codec: str) -> int:

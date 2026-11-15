@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import outputs, safety
+from . import outputs, safety, transport
 
 SSH_OPTIONS = [
     "-o", "BatchMode=yes",
@@ -106,18 +106,26 @@ def is_local_target(target: Target) -> bool:
     return target.local or is_local_host(target.host)
 
 
-def peer_targets(peers) -> list[Target]:
+def peer_targets(peers, policy: str = "auto") -> list[Target]:
     """Discovered peers as playback targets.
 
-    The peer's announced LAN address is the SSH host, so transfers keep
-    working when a static ``ssh_config`` HostName goes stale after a DHCP
-    change; the peer's name stays the label shown by the app.
+    The peer's best reachable address is the SSH host, chosen with the same
+    policy the audio path uses, so transfers keep working when a static
+    ``ssh_config`` HostName goes stale after a DHCP change.  The peer's name
+    stays the label shown by the app.
     """
     targets: list[Target] = []
     seen: set[str] = set()
+    local = [endpoint.address for endpoint in transport.local_endpoints()]
     for peer in peers:
         name = str(getattr(peer, "name", "") or "").strip()
         address = str(getattr(peer, "address", "") or "").strip()
+        endpoints = list(getattr(peer, "endpoints", []) or [])
+        chosen = transport.choose_endpoint(endpoints, policy, local) if endpoints else None
+        if chosen is not None and policy == "btpan":
+            address = chosen.address
+        elif chosen is not None and chosen.kind != transport.BTPAN:
+            address = chosen.address
         display = name or address
         host = address or name
         if not display or not host or display in seen:

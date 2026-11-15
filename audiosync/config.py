@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import safety
+from . import safety, transport
 
 APP_NAME = "audiosync"
 VERSION = "1.0.1"
@@ -138,6 +138,12 @@ class Config:
     acoustic_interval_s: int = 30
     acoustic_volume: int = 20
     extra_hosts: list[str] = field(default_factory=list)  # manual IPs, mDNS gaps
+    #: auto | lan | btpan.  ``auto`` prefers wired, then Wi-Fi, never PAN.
+    transport: str = "auto"
+    #: Stable peer identity (name or machine id) so a DHCP change keeps the choice.
+    preferred_peer: str | None = None
+    #: Optional label override; two stock hostnames would otherwise collide.
+    device_name: str = ""
     #: Synced media roots: {"path": "/mnt/storage/Media", "identity": "smb:storage/Media"}
     library_roots: list[dict[str, str]] = field(default_factory=list)
 
@@ -158,6 +164,10 @@ class Config:
             values["playback"] = safety.validate_playback(values.get("playback", "synced"))
         except safety.RoutingError:
             values["playback"] = "synced"
+        try:
+            values["transport"] = transport.validate_transport(values.get("transport", "auto"))
+        except ValueError:
+            values["transport"] = "auto"
         if safety.is_virtual_sink(values.get("hw_sink")):
             values["hw_sink"] = ""
         values["library_roots"] = normalize_library_roots(values.get("library_roots"))
@@ -208,6 +218,13 @@ class Config:
                 raise ConfigError(
                     f"invalid persisted playback {raw['playback']!r}: {exc}"
                 ) from exc
+        if "transport" in raw:
+            try:
+                transport.validate_transport(raw["transport"])
+            except ValueError as exc:
+                raise ConfigError(
+                    f"invalid persisted transport {raw['transport']!r}: {exc}"
+                ) from exc
         if "hw_sink" in raw:
             persisted_sink = raw.get("hw_sink")
             if not str(persisted_sink or "").strip():
@@ -241,6 +258,10 @@ class Config:
         return asdict(self)
 
     # --- small helpers ----------------------------------------------
+    def display_name(self) -> str:
+        """Label for discovery and status; falls back to the hostname."""
+        return self.device_name.strip() or device_name()
+
     def effective_buffer_ms(self) -> int:
         if self.preset == "deep":
             return 60_000

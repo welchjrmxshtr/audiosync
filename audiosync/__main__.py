@@ -11,9 +11,9 @@ import argparse
 import sys
 import time
 
-from . import __version__, config
+from . import __version__, config, transport
 from .backend import Backend, BackendError, reachable, server_ready, unit_active
-from .discovery import Discovery
+from .discovery import Discovery, resolve_host
 
 
 def _parse(argv: list[str] | None) -> argparse.Namespace:
@@ -29,6 +29,12 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--status", action="store_true", help="print unit and client status")
     parser.add_argument("--buffer", type=int, metavar="MS", help="buffer to use when hosting")
     parser.add_argument("--playback", choices=config.PLAYBACK_MODES, help="synced|direct|off")
+    parser.add_argument(
+        "--transport",
+        choices=transport.POLICIES,
+        help="auto|lan|btpan; btpan fails closed when no PAN link is up",
+    )
+    parser.add_argument("--resolve", metavar="NAME", help=argparse.SUPPRESS)
     parser.add_argument("--smoke", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=f"audiosync {__version__}")
     return parser.parse_args(argv)
@@ -45,7 +51,8 @@ def cmd_list(seconds: float = 3.0) -> int:
     if not peers:
         print("no peers found (are they running the app?)")
     for peer in peers:
-        print(f"{peer.name:<20} {peer.address:<16} role={peer.role:<7} buffer={peer.buf_ms}ms preset={peer.preset}")
+        paths = " ".join(f"{endpoint.kind}:{endpoint.address}" for endpoint in peer.endpoints) or peer.address
+        print(f"{peer.name:<20} {paths:<40} role={peer.role:<7} buffer={peer.buf_ms}ms preset={peer.preset}")
     discovery.stop()
     return 0
 
@@ -65,6 +72,8 @@ def cmd_host(args: argparse.Namespace) -> int:
         return 1
     if args.playback:
         cfg.playback = args.playback
+    if args.transport:
+        cfg.transport = args.transport
     backend = Backend(cfg)
     buffer_ms = args.buffer or cfg.effective_buffer_ms()
     try:
@@ -85,18 +94,21 @@ def cmd_join(host: str) -> int:
     cfg = _load_cli_config()
     if cfg is None:
         return 1
+    address = resolve_host(host) or host
     backend = Backend(cfg)
     try:
         # Resolve the local hardware output before snapclient starts.  Without
         # this, a fresh config has no explicit --soundcard and the safety check
         # correctly refuses rather than falling back to the virtual sink.
         backend.refresh_outputs(hosting=False, restart=False)
-        backend.join(host)
+        backend.join(address, host_name="" if address == host else host)
     except BackendError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    ok = server_ready(host, timeout=3.0)
-    print(f"joined {host} ({'reachable' if ok else 'no reply on :1780 yet'})")
+    ok = server_ready(address, timeout=3.0)
+    print(f"joined {address} ({'reachable' if ok else 'no reply on :1780 yet'})")
+    if address != host:
+        print(f"resolved {host} -> {address}")
     return 0
 
 
@@ -110,6 +122,8 @@ def cmd_stop() -> int:
 def cmd_status() -> int:
     cfg = config.Config.load()
     backend = Backend(cfg)
+    peer = cfg.preferred_peer or cfg.preferred_host or "this device"
+    print(f"transport={cfg.transport} peer={peer}")
     for unit in ("snapserver.service", "snapcast-capture.service", "snapclient.service"):
         print(f"{unit:<28} {'active' if unit_active(unit) else 'inactive'}")
     for host in ("127.0.0.1", cfg.preferred_host or ""):
@@ -128,6 +142,13 @@ def cmd_status() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse(argv)
+    if args.resolve:
+        address = resolve_host(args.resolve)
+        if not address:
+            print(f"could not resolve {args.resolve}", file=sys.stderr)
+            return 1
+        print(address)
+        return 0
     if args.smoke:
         from .app import run_gui
 

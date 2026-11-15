@@ -27,7 +27,8 @@ involved.
 
 ### Runtime
 
-- Fedora 44 or another recent Linux distribution with systemd user services.
+- A recent Linux distribution with systemd user services (Fedora, Arch and
+  Debian families are covered by the installer's package hints).
 - Python **3.11 or newer** (the development environment currently uses 3.14).
 - PipeWire or PulseAudio, plus `pactl` and either `parec` (usually
   `pulseaudio-utils`) or `pw-cat` (PipeWire).
@@ -44,8 +45,9 @@ involved.
 - For the optional SMB media mount: `cifs-utils` (`mount.cifs`).
 
 Snapcast is not in Fedora's main repositories on the tested release. The
-`install.sh` dependency check prints the COPR repository and package command
-used by this project; the script does not run `dnf` or install packages itself.
+`install.sh` dependency check detects the distribution and prints the matching
+package commands (dnf with the project's COPR, pacman plus the AUR, or apt);
+the script itself never installs packages or runs `sudo`.
 
 ### System files
 
@@ -245,6 +247,64 @@ corrects clock drift by dropping or duplicating samples; the acoustic loop must
 not fight that. A device without a physical microphone near its speaker cannot
 be measured and should fall back to group-aware Auto plus manual calibration.
 
+## Networks and transports
+
+Audiosync has no fixed addresses. Each device announces every usable NIC
+(Ethernet, Wi-Fi and, once configured, Bluetooth PAN) over mDNS, and the
+address used for a peer is chosen from that list:
+
+- **Auto** — same subnet first, then Ethernet, then Wi-Fi. It never chooses
+  Bluetooth on its own, because a PAN is narrow.
+- **LAN** — Ethernet or Wi-Fi only.
+- **Bluetooth** — the point-to-point PAN link and nothing else. If that link
+  is down the app refuses to join instead of quietly falling back to Wi-Fi.
+
+The choice is saved by device identity, not by address, so a DHCP lease change
+or moving a laptop from Wi-Fi to Ethernet keeps the same host selected. The
+app re-announces itself when an interface appears, disappears or changes
+address, and a lost host is retried by name. `audiosync --resolve NAME` shows
+what a peer name currently resolves to. `client.env` records both the address
+and the host name, and the generated `audiosync-snapclient` wrapper re-resolves
+the name at every start.
+
+The transport selector is locked while hosting or joining, for the same reason
+the playback radios are: changing the path under a running group would
+silently move audio.
+
+### Bluetooth PAN
+
+A PAN is one radio hop instead of a trip through the router. That helps when
+two devices are in the same room and the access point is the bottleneck, and
+it is the wrong tool when they are far apart or when you need many clients.
+
+Bandwidth is the limit. Snapcast's PCM stream is 1.536 Mbit/s (48 kHz, 16-bit,
+stereo) and a BR/EDR PAN moves roughly 1–2 Mbit/s in total. So when
+**Bluetooth** is selected the codec is capped at FLAC (about 0.7 Mbit/s) and
+the status line says so. Latency improves only indirectly: PAN removes the
+router hop, which lets the adaptive buffer settle near its floor instead of
+backing off.
+
+Set it up once per device, as your user (NetworkManager may ask for polkit
+privileges):
+
+```sh
+# On the device that shares its connection:
+scripts/setup-bt-pan.sh --mode nap
+
+# On each other device, using that device's Bluetooth address:
+scripts/setup-bt-pan.sh --mode panu --mac AA:BB:CC:DD:EE:FF
+```
+
+Pair the devices in the desktop's Bluetooth settings first. The script is
+idempotent, supports `--dry-run`, never calls `sudo`, and prints the firewalld
+command needed to let Snapcast's ports through the new interface. If audio does
+not flow, that firewall step is the usual cause:
+
+```sh
+sudo firewall-cmd --permanent --zone=trusted --add-interface=bnep0
+sudo firewall-cmd --reload
+```
+
 ## Video offset workflow
 
 The audio path is delayed by the buffer, so the video player must emit audio
@@ -298,7 +358,7 @@ runtime Python dependencies):
 ```sh
 python3 -m unittest discover -s tests -t .
 ruff check .
-bash -n install.sh scripts/setup-smb-mount.sh
+bash -n install.sh scripts/setup-smb-mount.sh scripts/setup-bt-pan.sh
 ```
 
 The GUI smoke test is headless:
@@ -373,6 +433,16 @@ The probe is audible by design. Start with a low **probe level**, keep the
 monitor off until calibration succeeds, and do not enable it while microphones
 would record private conversation.
 
+### Bluetooth path does not carry audio
+
+- Confirm the PAN interface has an address: `ip -brief addr show bnep0`.
+- `audiosync --status` prints the selected transport and peer.
+- Open the firewalld zone used by `bnep0` (see **Bluetooth PAN**), or add ports
+  `1704/tcp`, `1705/tcp` and `1780/tcp` there.
+- The app refuses a Bluetooth join when no PAN interface has an address. That
+  refusal is intentional: it never detours over Wi-Fi after you asked for the
+  direct link.
+
 ### Uninstall left system files
 
 That is intentional unless you confirmed removal. Re-run:
@@ -396,7 +466,7 @@ audiosync/          Python package and console entry point
 tests/              unittest suite (pure helpers; no live audio)
 systemd/            user-unit templates
 pipewire/           audible sink configuration
-scripts/            SMB mount setup
+scripts/            SMB mount and Bluetooth PAN helpers
 install.sh          distro-level user installer/uninstaller
 pyproject.toml      package metadata, dependencies, entry point, ruff config
 .github/workflows/  CI gate

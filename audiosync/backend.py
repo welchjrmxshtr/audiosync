@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import config, outputs, safety
+from . import config, outputs, safety, transport
 
 UNIT_SERVER = "snapserver.service"
 UNIT_CAPTURE = "snapcast-capture.service"
@@ -64,20 +64,15 @@ def journal_tail(unit: str, lines: int = 20) -> str:
 
 
 def local_ipv4_addresses() -> set[str]:
-    """LAN addresses used to match a persisted client whose name changed."""
-    addresses: set[str] = set()
+    """LAN addresses used to match a persisted client whose name changed.
+
+    Every NIC is included: a client that reappears on the other interface of
+    a multi-homed device must still match its old pairing record.
+    """
+    addresses = {endpoint.address for endpoint in transport.local_endpoints()}
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             addresses.add(str(info[4][0]))
-    except OSError:
-        pass
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sock.connect(("192.0.2.1", 9))
-            addresses.add(sock.getsockname()[0])
-        finally:
-            sock.close()
     except OSError:
         pass
     return {ip for ip in addresses if not ip.startswith("127.")}
@@ -337,10 +332,14 @@ class Backend:
             )
         return args, soundcard
 
-    def write_client_env(self, host: str) -> None:
+    def write_client_env(self, host: str, host_name: str = "") -> None:
+        """Record the address now, and the name to re-resolve after a lease change."""
         args, soundcard = self._validated_client_sink()
         args = f"{args} --soundcard {soundcard}"
-        values = {"AUDIOSYNC_HOST": host, "AUDIOSYNC_ARGS": args}
+        values = {"AUDIOSYNC_HOST": host}
+        if host_name:
+            values["AUDIOSYNC_HOST_NAME"] = host_name
+        values["AUDIOSYNC_ARGS"] = args
         config.write_env_file(config.client_env_path(), values)
 
     # -- roles -------------------------------------------------------
@@ -388,8 +387,8 @@ class Backend:
         else:
             systemctl("stop", UNIT_CLIENT)
 
-    def join(self, host: str, host_role: bool = False) -> None:
-        self.write_client_env(host)
+    def join(self, host: str, host_role: bool = False, host_name: str = "") -> None:
+        self.write_client_env(host, host_name)
         ok, message = systemctl("restart", UNIT_CLIENT)
         if not ok:
             raise BackendError(f"snapclient did not start: {message}\n{journal_tail(UNIT_CLIENT)}")

@@ -30,13 +30,25 @@ class PackagingTests(unittest.TestCase):
 
     def test_readme_covers_install_mount_latency_and_uninstall(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")
-        for phrase in ("pyproject", "setup-smb-mount", "--remove-smb", "48,000 Hz", "Copy VLC"):
+        for phrase in (
+            "pyproject",
+            "setup-smb-mount",
+            "--remove-smb",
+            "48,000 Hz",
+            "Copy VLC",
+            "Bluetooth PAN",
+        ):
             self.assertIn(phrase, text)
 
 
 class ShellScriptTests(unittest.TestCase):
     def test_shell_scripts_parse(self) -> None:
-        for relative in ("install.sh", "scripts/setup-smb-mount.sh", "scripts/update.sh"):
+        for relative in (
+            "install.sh",
+            "scripts/setup-smb-mount.sh",
+            "scripts/setup-bt-pan.sh",
+            "scripts/update.sh",
+        ):
             result = subprocess.run(
                 ["bash", "-n", str(ROOT / relative)],
                 capture_output=True,
@@ -63,6 +75,39 @@ class ShellScriptTests(unittest.TestCase):
         text = script.read_text(encoding="utf-8")
         for phrase in ("umask 077", "chmod 0600", "audiosync-managed-smb-mount", "cp --preserve=mode", "fstab"):
             self.assertIn(phrase, text)
+
+    def test_bt_pan_helper_is_executable_and_explains_itself(self) -> None:
+        script = ROOT / "scripts/setup-bt-pan.sh"
+        self.assertTrue(os.access(script, os.X_OK))
+        result = subprocess.run(
+            ["bash", str(script), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for phrase in ("--mode nap", "--mode panu", "--mac", "--dry-run"):
+            self.assertIn(phrase, result.stdout)
+
+    def test_bt_pan_dry_run_reports_instead_of_guessing(self) -> None:
+        result = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "scripts/setup-bt-pan.sh"),
+                "--dry-run",
+                "--mode",
+                "panu",
+                "--mac",
+                "AA:BB:CC:DD:EE:FF",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Without nmcli the script must say what is missing rather than pretend.
+        self.assertIn(result.returncode, (0, 1))
+        output = result.stdout + result.stderr
+        self.assertTrue("nmcli" in output or "dry-run" in output, output)
 
     def test_setup_dry_run_changes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
