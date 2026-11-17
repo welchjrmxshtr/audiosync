@@ -292,7 +292,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._refresh_acoustic_label()
         try:
-            self._refresh_output()
+            # Opening the window must not disturb a session that is already
+            # playing; host/join refresh the output explicitly when needed.
+            self._refresh_output(restart=False)
         except BackendError:
             pass
         self.discovery.start(role="idle", buf_ms=self.controller.buffer_ms, preset=cfg.preset)
@@ -1385,7 +1387,7 @@ class MainWindow(QMainWindow):
             self._remote_health_thread.deleteLater()
             self._remote_health_thread = None
 
-    def _refresh_output(self, hosting: bool = False, restart: bool = True) -> bool:
+    def _refresh_output(self, hosting: bool = False, restart: bool = False) -> bool:
         """Keep the cached sink honest; the next join/host restarts what it must."""
         try:
             changed, sink, note = self.backend.refresh_outputs(hosting=hosting, restart=restart)
@@ -1998,6 +2000,7 @@ class MainWindow(QMainWindow):
 def run_gui(smoke: bool = False) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Audiosync")
+    app.setDesktopFileName("audiosync")
     app.setQuitOnLastWindowClosed(not QSystemTrayIcon.isSystemTrayAvailable())
     window = MainWindow(config.Config.load(), silent=smoke)
     window.show()

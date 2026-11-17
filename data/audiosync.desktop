@@ -7,4 +7,4 @@ Icon=audio-speakers
 Terminal=false
 Categories=AudioVideo;Audio;
 Keywords=sync;audio;multiroom;snapcast;
-StartupNotify=true
+StartupNotify=false

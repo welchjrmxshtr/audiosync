@@ -24,6 +24,10 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("zeroconf", dependencies)
         self.assertGreaterEqual(tuple(int(part) for part in project["requires-python"].removeprefix(">=").split(".")), (3, 11))
 
+    def test_desktop_entry_does_not_request_startup_notifications(self) -> None:
+        text = (ROOT / "data/audiosync.desktop").read_text(encoding="utf-8")
+        self.assertIn("StartupNotify=false", text)
+
     def test_console_entry_module_is_importable(self) -> None:
         from audiosync.__main__ import main
 
