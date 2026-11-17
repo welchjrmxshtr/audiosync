@@ -74,6 +74,10 @@ class ShellScriptTests(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
 
+    def test_installer_client_wrapper_keeps_user_local_openssl3_fallback(self) -> None:
+        text = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn(".local/lib/audiosync/openssl3", text)
+
     def test_installer_offers_opt_in_auto_updates(self) -> None:
         text = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn("WITH_AUTO_UPDATE=0", text)

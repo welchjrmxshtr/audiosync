@@ -383,6 +383,12 @@ cat > "$BIN_DIR/audiosync-snapclient" <<EOF
 # Wi-Fi and Ethernet; the stored address is only a fallback for when
 # discovery is unavailable.
 . "\$HOME/.config/audiosync/client.env"
+# Fedora 45 moved to OpenSSL 4; keep a user-local OpenSSL 3 fallback usable
+# without requiring a system-wide compatibility package.
+if [ -d "\$HOME/.local/lib/audiosync/openssl3" ]; then
+  LD_LIBRARY_PATH="\$HOME/.local/lib/audiosync/openssl3\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+  export LD_LIBRARY_PATH
+fi
 host="\${AUDIOSYNC_HOST:-}"
 if [ -n "\${AUDIOSYNC_HOST_NAME:-}" ]; then
   export PYTHONPATH="$PROJECT\${PYTHONPATH:+:\$PYTHONPATH}"

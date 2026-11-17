@@ -66,6 +66,14 @@ class GuiRoutingGuardTests(unittest.TestCase):
         }
         return window
 
+    def test_startup_output_refresh_does_not_restart_units(self) -> None:
+        window = self.make_window()
+        window.backend = mock.Mock()
+        window.backend.refresh_outputs.return_value = (False, "alsa_output.test", "Test output")
+        window._output_note = ""
+        window._refresh_output()
+        window.backend.refresh_outputs.assert_called_once_with(hosting=False, restart=False)
+
     def test_playback_radios_are_reverted_while_hosting(self) -> None:
         window = self.make_window()
         window.state = app_mod.HOSTING
